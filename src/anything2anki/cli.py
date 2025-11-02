@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .constants import DEFAULT_MODEL
 from .workflow import generate_anki_cards
 
 
@@ -33,8 +34,13 @@ def main():
         "--model",
         "-m",
         type=str,
-        default="openai:gpt-4o",
-        help='AI model to use (default: "openai:gpt-4o")',
+        default=DEFAULT_MODEL,
+        help=f'AI model to use (default: "{DEFAULT_MODEL}")',
+    )
+    parser.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="Only generate the Markdown preview report; skip creating the .apkg deck",
     )
 
     args = parser.parse_args()
@@ -51,6 +57,7 @@ def main():
             learning_description=args.learning_description,
             output_path=args.output,
             model=args.model,
+            preview_only=args.preview_only,
         )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

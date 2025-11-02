@@ -23,4 +23,5 @@ packages = ["src/anything2anki"]
 [dependency-groups]
 dev = [
     "ruff>=0.14.3",
+    "pytest>=8.0.0",
 ]

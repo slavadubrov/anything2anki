@@ -3,17 +3,18 @@
 Generate Anki decks from plain text using an LLM (via the `aisuite` SDK). The tool reads a local text/Markdown file, asks a language model to extract clear Q&A pairs, and builds a `.apkg` file you can import into Anki.
 
 - LLM provider: `aisuite` (OpenAI enabled by default)
-- Default model: `openai:gpt-4o`
+- Default model: `gpt5mini`
 - Output: Anki `.apkg` deck built with `genanki`
 
 ## How It Works
 
 1. Read input file contents (UTF‑8 text/Markdown).
 2. Build prompts: a fixed system prompt plus a user prompt with your learning objective and the file’s content.
-3. Call the LLM using `aisuite` with the selected `--model` (default `openai:gpt-4o`).
+3. Call the LLM using `aisuite` with the selected `--model` (default `gpt5mini`).
 4. Parse the LLM response as a JSON array of objects `{ "question": ..., "answer": ... }`.
 5. Create a simple Q&A Anki model and deck using `genanki`.
-6. Write a `.apkg` file ready to import into Anki.
+6. Write a Markdown preview report alongside the output showing all generated Q&A pairs.
+7. Write a `.apkg` file ready to import into Anki.
 
 If the model returns non‑JSON output or no Q&A pairs, the run fails with a helpful error. Large inputs and poorly formatted content can reduce quality; consider pruning inputs to the most relevant sections.
 
@@ -33,7 +34,7 @@ uv pip install -e .
 
 ## Setup
 
-Environment variables are loaded automatically from a local `.env` at the project root (see `src/anything2anki/__init__.py`). The only required var out of the box is your OpenAI key, because the default model is an OpenAI model.
+Environment variables are loaded automatically from a local `.env` at the project root (see `src/anything2anki/__init__.py`). Configure provider credentials as needed for your chosen model. For OpenAI models, set `OPENAI_API_KEY`.
 
 ```bash
 cp .env.example .env
@@ -47,7 +48,8 @@ export OPENAI_API_KEY=sk-...
 ```
 
 Notes:
-- The project depends on `aisuite[openai]`, so OpenAI works without extra setup. Other providers can be used if supported by `aisuite` and available in your environment; pass their fully qualified model name to `--model`.
+
+- The project depends on `aisuite[openai]`, so OpenAI works without extra setup. Other providers can be used if supported by `aisuite` and available in your environment; pass their (optionally provider-qualified) model name to `--model`.
 - Never commit real API keys; `.env` is in `.gitignore`.
 
 ## Usage
@@ -63,9 +65,16 @@ anything2anki input.txt "Extract key concepts and definitions"
 Explicit output path and model:
 
 ```bash
-anything2anki input.md "German Citizenship Interview facts" \
+anything2anki input.md "Extract key concepts and definitions" \
   --output data/civics.apkg \
-  --model openai:gpt-4o
+  --model gpt5mini
+
+Preview only (skip .apkg, just write Markdown preview next to the would-be output path):
+
+```bash
+anything2anki input.md "Extract key concepts" --preview-only
+```
+
 ```
 
 Run as a module (useful with `uv`):
@@ -76,10 +85,12 @@ uv run python -m anything2anki data/input.md \
 ```
 
 CLI options:
+
 - `file_path` (positional): Path to the input text/Markdown file.
 - `learning_description` (positional): What to learn/extract (drives the prompt).
 - `--output, -o`: Output `.apkg` path. Defaults to `<input>.apkg`.
-- `--model, -m`: LLM model (default `openai:gpt-4o`).
+- `--model, -m`: LLM model (default `gpt5mini`).
+- `--preview-only`: Only generate the Markdown preview report and skip creating the `.apkg` deck.
 
 ### Python API
 
@@ -90,15 +101,15 @@ generate_anki_cards(
     file_path="input.txt",
     learning_description="Extract key concepts and definitions",
     output_path="output.apkg",
-    model="openai:gpt-4o",  # optional, default shown
+    model="gpt5mini",  # optional, default shown
 )
 ```
 
 ## Models
 
-- Default: `openai:gpt-4o` (requires `OPENAI_API_KEY`).
-- Override with `--model` or the `model` argument in the Python API, for example `openai:gpt-4o-mini`.
-- Model naming follows `aisuite`’s `provider:model` convention. Ensure the provider is supported and credentials are configured.
+- Default: `gpt5mini`.
+- Override with `--model` or the `model` argument in the Python API.
+- Model naming follows `aisuite`’s conventions. If using a provider-qualified model like `openai:gpt-4o`, ensure credentials are configured.
 
 ## Workflow Details
 
@@ -107,7 +118,7 @@ generate_anki_cards(
 - Deck/model: a simple two‑field “Question / Answer” model is defined in `src/anything2anki/anki_model.py` and a deck named "Generated Deck" is created. Each Q&A becomes one note.
 - Packaging: the deck is exported as `.apkg` using `genanki` and written to `--output`.
 
-Architecture: CLI → `workflow.generate_anki_cards` → `aisuite` LLM → JSON → `genanki` deck → `.apkg`.
+Architecture: CLI → `workflow.generate_anki_cards` → `aisuite` LLM → JSON → Markdown preview → `genanki` deck → `.apkg`.
 
 ## Project Structure
 
@@ -153,7 +164,7 @@ uv run pytest tests/
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv)
-- OpenAI API key (for default model)
+- Provider API keys as needed (e.g., `OPENAI_API_KEY` for OpenAI models)
 - Anki (to import the resulting `.apkg`)
 
 ## Tips & Limitations

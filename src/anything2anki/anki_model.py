@@ -2,6 +2,16 @@
 
 import genanki
 
+from .constants import (
+    ANKI_AFMT,
+    ANKI_DECK_ID,
+    ANKI_MODEL_ID,
+    ANKI_MODEL_NAME,
+    ANKI_QFMT,
+    ANKI_TEMPLATE_NAME,
+    DEFAULT_DECK_NAME,
+)
+
 
 def create_qa_model():
     """Create a simple Q&A Anki model.
@@ -10,24 +20,24 @@ def create_qa_model():
         genanki.Model: An Anki model with Question and Answer fields.
     """
     model = genanki.Model(
-        model_id=1607392319,
-        name="Simple Q&A Model",
+        model_id=ANKI_MODEL_ID,
+        name=ANKI_MODEL_NAME,
         fields=[
             {"name": "Question"},
             {"name": "Answer"},
         ],
         templates=[
             {
-                "name": "Card 1",
-                "qfmt": "{{Question}}",
-                "afmt": '{{FrontSide}}<hr id="answer">{{Answer}}',
+                "name": ANKI_TEMPLATE_NAME,
+                "qfmt": ANKI_QFMT,
+                "afmt": ANKI_AFMT,
             },
         ],
     )
     return model
 
 
-def create_deck(deck_name="Generated Deck"):
+def create_deck(deck_name=DEFAULT_DECK_NAME):
     """Create an Anki deck.
 
     Args:
@@ -37,7 +47,7 @@ def create_deck(deck_name="Generated Deck"):
         genanki.Deck: An Anki deck instance.
     """
     deck = genanki.Deck(
-        deck_id=2059400110,
+        deck_id=ANKI_DECK_ID,
         name=deck_name,
     )
     return deck
