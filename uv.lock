@@ -50,6 +50,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aisuite", extra = ["openai"] },
     { name = "genanki" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
 ]
 
@@ -63,6 +64,7 @@ dev = [
 requires-dist = [
     { name = "aisuite", extras = ["openai"], specifier = ">=0.1.12" },
     { name = "genanki", specifier = ">=0.13.1" },
+    { name = "pydantic", specifier = ">=2.7.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
 ]
 

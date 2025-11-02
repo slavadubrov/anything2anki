@@ -49,16 +49,14 @@ Return improved flashcards that fit this schema:
 Ensure the revised set addresses the review feedback while staying accurate."""
 
 
-def _format_flashcards_for_prompt(cards: Iterable[Flashcard | dict[str, str]]) -> str:
+def _format_flashcards_for_prompt(cards: Iterable[Flashcard]) -> str:
     """Return a formatted JSON block of flashcards for inclusion in prompts."""
 
     serialised = ensure_flashcards_serializable(cards)
     return json.dumps(serialised, indent=2, ensure_ascii=False)
 
 
-def _format_feedback_for_prompt(
-    feedback: FlashcardFeedback | dict[str, object]
-) -> str:
+def _format_feedback_for_prompt(feedback: FlashcardFeedback) -> str:
     """Return a formatted JSON block of feedback for inclusion in prompts."""
 
     serialised = ensure_feedback_serializable(feedback)
@@ -71,15 +69,13 @@ def create_user_prompt(text_content, learning_description, improvement_context=N
     Args:
         text_content: The text content to process.
         learning_description: Description of what to learn from the text.
-        improvement_context: Optional dict with 'qa_pairs' and 'feedback' for improvement.
+        improvement_context: Optional dict with 'qa_pairs' (list[Flashcard]) and 'feedback' (FlashcardFeedback).
 
     Returns:
         str: Formatted user prompt.
     """
     if improvement_context:
-        qa_pairs_json = _format_flashcards_for_prompt(
-            improvement_context["qa_pairs"]
-        )
+        qa_pairs_json = _format_flashcards_for_prompt(improvement_context["qa_pairs"])
         feedback_json = _format_feedback_for_prompt(improvement_context["feedback"])
         prompt = f"""Learning objective: "{learning_description}"
 
@@ -109,7 +105,7 @@ def create_reflection_prompt(qa_pairs, text_content, learning_description):
     """Create a reflection prompt for reviewing Q&A pairs.
 
     Args:
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: List of Flashcard models previously generated.
         text_content: The original source text.
         learning_description: Description of what to learn from the text.
 

@@ -100,30 +100,23 @@ def dump_json_schema(model: type[BaseModel]) -> str:
 
 
 def ensure_flashcards_serializable(
-    cards: Iterable[Flashcard | dict[str, str]],
+    cards: Iterable[Flashcard],
 ) -> list[dict[str, str]]:
-    """Normalize flashcards into serialisable dictionaries for prompts."""
+    """Normalize flashcards into serialisable dictionaries for prompts.
 
-    serialised: list[dict[str, str]] = []
-    for card in cards:
-        if isinstance(card, Flashcard):
-            serialised.append(card.model_dump())
-        else:
-            serialised.append({
-                "question": str(card.get("question", "")),
-                "answer": str(card.get("answer", "")),
-            })
-    return serialised
+    Accepts only validated Flashcard models.
+    """
+
+    return [card.model_dump() for card in cards]
 
 
-def ensure_feedback_serializable(
-    feedback: FlashcardFeedback | dict[str, object]
-) -> dict[str, object]:
-    """Normalise feedback structures for prompt rendering."""
+def ensure_feedback_serializable(feedback: FlashcardFeedback) -> dict[str, object]:
+    """Normalise feedback structures for prompt rendering.
 
-    if isinstance(feedback, FlashcardFeedback):
-        return feedback.model_dump()
-    return dict(feedback)
+    Accepts only validated FlashcardFeedback models.
+    """
+
+    return feedback.model_dump()
 
 
 class FlashcardValidationError(ValueError):

@@ -1,6 +1,7 @@
 """Main workflow for generating Anki cards from text files using AI."""
 
 import os
+import json
 from pathlib import Path
 from typing import Sequence
 
@@ -17,7 +18,12 @@ from .prompts import (
     create_reflection_prompt,
     create_user_prompt,
 )
-from .schemas import Flashcard, FlashcardFeedback, FlashcardList, FlashcardValidationError
+from .schemas import (
+    Flashcard,
+    FlashcardFeedback,
+    FlashcardList,
+    FlashcardValidationError,
+)
 
 
 def validate_input_file(file_path: str) -> None:
@@ -143,22 +149,44 @@ def parse_feedback_response(response_content: str) -> FlashcardFeedback:
     json_start = response_content.find("{")
     json_end = response_content.rfind("}") + 1
 
-    feedback = None
-    if json_start != -1 and json_end != 0:
-        json_str = response_content[json_start:json_end]
-        target = json_str
-    else:
-        target = response_content
+    # If no JSON object braces are present, try parsing the whole response as JSON
+    # to distinguish between "not JSON" vs. "valid JSON but not an object".
+    if json_start == -1 or json_end == 0:
+        try:
+            payload = json.loads(response_content)
+        except json.JSONDecodeError:
+            raise ValueError("Could not find JSON object in response")
+        if not isinstance(payload, dict):
+            raise ValueError("JSON feedback response is not a dictionary")
+        # If surprisingly a dict without braces slicing (edge case), proceed to validate it.
+        try:
+            return FlashcardFeedback.model_validate(payload)
+        except ValidationError as err:
+            formatted_error = FlashcardValidationError.from_validation_error(err)
+            raise ValueError(
+                f"Feedback schema validation failed: {formatted_error}. Response: {response_content[:500]}"
+            ) from err
+
+    json_str = response_content[json_start:json_end]
+
+    # Parse JSON and ensure it is a dictionary before validation
+    try:
+        payload = json.loads(json_str)
+    except json.JSONDecodeError as err:
+        raise ValueError(
+            f"Feedback schema validation failed: {err}. Response: {response_content[:500]}"
+        ) from err
+
+    if not isinstance(payload, dict):
+        raise ValueError("JSON feedback response is not a dictionary")
 
     try:
-        feedback = FlashcardFeedback.model_validate_json(target)
+        return FlashcardFeedback.model_validate(payload)
     except ValidationError as err:
         formatted_error = FlashcardValidationError.from_validation_error(err)
         raise ValueError(
             f"Feedback schema validation failed: {formatted_error}. Response: {response_content[:500]}"
         ) from err
-
-    return feedback
 
 
 def generate_qa_pairs(
@@ -384,9 +412,8 @@ def generate_anki_cards(
         feedback = reflect_on_qa_pairs(
             client, model, qa_pairs, text_content, learning_description
         )
-        print(
-            f"Reflection complete. Overall quality: {feedback.get('overall_quality', 'unknown')}"
-        )
+        # feedback is a FlashcardFeedback model; access attribute directly
+        print(f"Reflection complete. Overall quality: {feedback.overall_quality}")
 
         # Improve Q&A pairs based on feedback
         qa_pairs = improve_qa_pairs(
