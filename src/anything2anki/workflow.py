@@ -3,19 +3,28 @@
 import json
 import os
 from pathlib import Path
+from typing import Sequence
 
 import aisuite as ai
 from genanki import Note, Package
+from pydantic import ValidationError
 
 from .anki_model import create_deck, create_qa_model
 from .constants import DEFAULT_MODEL
 from .prompts import (
-    GENERATION_PROMPT,
-    IMPROVEMENT_PROMPT,
-    REFLECTION_PROMPT,
+    AVAILABLE_PRESETS,
     create_reflection_prompt,
     create_user_prompt,
+    get_system_prompts,
 )
+from .schemas import (
+    Flashcard,
+    FlashcardFeedback,
+    FlashcardList,
+    FlashcardValidationError,
+)
+
+_PROMPT_PRESET = "general"
 
 
 def validate_input_file(file_path: str) -> None:
@@ -91,14 +100,14 @@ def call_ai_model(
     return response.choices[0].message.content.strip()
 
 
-def parse_ai_response(response_content: str) -> list[dict]:
-    """Extract and parse JSON from the AI response.
+def parse_ai_response(response_content: str) -> list[Flashcard]:
+    """Extract and parse flashcards from the AI response.
 
     Args:
         response_content: The raw response content from the AI model.
 
     Returns:
-        list[dict]: A list of Q&A pairs.
+        list[Flashcard]: A list of validated flashcards.
 
     Raises:
         ValueError: If the response cannot be parsed as JSON or is invalid.
@@ -114,31 +123,25 @@ def parse_ai_response(response_content: str) -> list[dict]:
 
     json_str = response_content[json_start:json_end]
 
-    # Parse JSON
     try:
-        qa_pairs = json.loads(json_str)
-    except json.JSONDecodeError as e:
+        qa_pairs = FlashcardList.model_validate_json(json_str)
+    except ValidationError as err:
+        formatted_error = FlashcardValidationError.from_validation_error(err)
         raise ValueError(
-            f"Could not parse JSON response: {e}. Response: {response_content[:500]}"
-        )
+            f"Flashcard schema validation failed: {formatted_error}. Response: {response_content[:500]}"
+        ) from err
 
-    if not isinstance(qa_pairs, list):
-        raise ValueError("JSON response is not a list")
-
-    if len(qa_pairs) == 0:
-        raise ValueError("No Q&A pairs generated from the text")
-
-    return qa_pairs
+    return qa_pairs.root
 
 
-def parse_feedback_response(response_content: str) -> dict:
-    """Extract and parse JSON feedback from the AI response.
+def parse_feedback_response(response_content: str) -> FlashcardFeedback:
+    """Extract and parse structured feedback from the AI response.
 
     Args:
         response_content: The raw response content from the AI model.
 
     Returns:
-        dict: A dictionary with feedback keys: strengths, weaknesses, recommendations, overall_quality.
+        FlashcardFeedback: Structured feedback covering strengths, weaknesses, recommendations, and overall quality.
 
     Raises:
         ValueError: If the response cannot be parsed as JSON or is invalid.
@@ -147,35 +150,44 @@ def parse_feedback_response(response_content: str) -> dict:
     json_start = response_content.find("{")
     json_end = response_content.rfind("}") + 1
 
-    feedback = None
-    if json_start != -1 and json_end != 0:
-        json_str = response_content[json_start:json_end]
-        # Parse JSON object region
+    # If no JSON object braces are present, try parsing the whole response as JSON
+    # to distinguish between "not JSON" vs. "valid JSON but not an object".
+    if json_start == -1 or json_end == 0:
         try:
-            feedback = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Could not parse JSON feedback: {e}. Response: {response_content[:500]}"
-            )
-    else:
-        # Fallback: try parsing the whole content as JSON
-        try:
-            feedback = json.loads(response_content)
+            payload = json.loads(response_content)
         except json.JSONDecodeError:
+            raise ValueError("Could not find JSON object in response")
+        if not isinstance(payload, dict):
+            raise ValueError("JSON feedback response is not a dictionary")
+        # If surprisingly a dict without braces slicing (edge case), proceed to validate it.
+        try:
+            return FlashcardFeedback.model_validate(payload)
+        except ValidationError as err:
+            formatted_error = FlashcardValidationError.from_validation_error(err)
             raise ValueError(
-                f"Could not find JSON object in response. Response: {response_content[:200]}"
-            )
+                f"Feedback schema validation failed: {formatted_error}. Response: {response_content[:500]}"
+            ) from err
 
-    if not isinstance(feedback, dict):
+    json_str = response_content[json_start:json_end]
+
+    # Parse JSON and ensure it is a dictionary before validation
+    try:
+        payload = json.loads(json_str)
+    except json.JSONDecodeError as err:
+        raise ValueError(
+            f"Feedback schema validation failed: {err}. Response: {response_content[:500]}"
+        ) from err
+
+    if not isinstance(payload, dict):
         raise ValueError("JSON feedback response is not a dictionary")
 
-    # Validate required fields
-    required_fields = ["strengths", "weaknesses", "recommendations", "overall_quality"]
-    for field in required_fields:
-        if field not in feedback:
-            raise ValueError(f"Missing required field in feedback: {field}")
-
-    return feedback
+    try:
+        return FlashcardFeedback.model_validate(payload)
+    except ValidationError as err:
+        formatted_error = FlashcardValidationError.from_validation_error(err)
+        raise ValueError(
+            f"Feedback schema validation failed: {formatted_error}. Response: {response_content[:500]}"
+        ) from err
 
 
 def generate_qa_pairs(
@@ -184,7 +196,8 @@ def generate_qa_pairs(
     text_content: str,
     learning_description: str,
     improvement_context: dict | None = None,
-) -> list[dict]:
+    prompt_preset: str | None = None,
+) -> list[Flashcard]:
     """Generate Q&A pairs from text content using AI.
 
     Args:
@@ -195,7 +208,7 @@ def generate_qa_pairs(
         improvement_context: Optional dict with 'qa_pairs' and 'feedback' for improvement.
 
     Returns:
-        list[dict]: A list of Q&A pairs.
+        list[Flashcard]: A list of validated flashcards.
 
     Raises:
         Exception: If there's an error calling the AI model or parsing the response.
@@ -203,8 +216,9 @@ def generate_qa_pairs(
     user_prompt = create_user_prompt(
         text_content, learning_description, improvement_context
     )
-    # Use IMPROVEMENT_PROMPT when improving, otherwise use GENERATION_PROMPT
-    system_prompt = IMPROVEMENT_PROMPT if improvement_context else GENERATION_PROMPT
+    preset = cast_preset(prompt_preset or _PROMPT_PRESET)
+    gen_prompt, _, imp_prompt = get_system_prompts(preset)
+    system_prompt = imp_prompt if improvement_context else gen_prompt
     response_content = call_ai_model(client, model, system_prompt, user_prompt)
     return parse_ai_response(response_content)
 
@@ -212,21 +226,22 @@ def generate_qa_pairs(
 def reflect_on_qa_pairs(
     client: ai.Client,
     model: str,
-    qa_pairs: list[dict],
+    qa_pairs: list[Flashcard],
     text_content: str,
     learning_description: str,
-) -> dict:
+    prompt_preset: str | None = None,
+) -> FlashcardFeedback:
     """Review Q&A pairs and generate feedback for improvement.
 
     Args:
         client: The aisuite client instance.
         model: The AI model to use.
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: List of generated flashcards to review.
         text_content: The original source text.
         learning_description: Description of what to learn from the text.
 
     Returns:
-        dict: Feedback dictionary with strengths, weaknesses, recommendations, overall_quality.
+        FlashcardFeedback: Structured feedback capturing strengths, weaknesses, recommendations, and overall quality.
 
     Raises:
         Exception: If there's an error calling the AI model or parsing the response.
@@ -234,8 +249,10 @@ def reflect_on_qa_pairs(
     reflection_prompt = create_reflection_prompt(
         qa_pairs, text_content, learning_description
     )
+    preset = cast_preset(prompt_preset or _PROMPT_PRESET)
+    _, reflection_system, _ = get_system_prompts(preset)
     response_content = call_ai_model(
-        client, model, REFLECTION_PROMPT, reflection_prompt
+        client, model, reflection_system, reflection_prompt
     )
     return parse_feedback_response(response_content)
 
@@ -243,38 +260,43 @@ def reflect_on_qa_pairs(
 def improve_qa_pairs(
     client: ai.Client,
     model: str,
-    qa_pairs: list[dict],
-    feedback: dict,
+    qa_pairs: list[Flashcard],
+    feedback: FlashcardFeedback,
     text_content: str,
     learning_description: str,
-) -> list[dict]:
+    prompt_preset: str | None = None,
+) -> list[Flashcard]:
     """Generate improved Q&A pairs based on feedback.
 
     Args:
         client: The aisuite client instance.
         model: The AI model to use.
-        qa_pairs: Original list of Q&A pairs.
-        feedback: Feedback dictionary from reflection step.
+        qa_pairs: Original list of flashcards.
+        feedback: Structured feedback from the reflection step.
         text_content: The original source text.
         learning_description: Description of what to learn from the text.
 
     Returns:
-        list[dict]: Improved list of Q&A pairs.
+        list[Flashcard]: Improved list of flashcards.
 
     Raises:
         Exception: If there's an error calling the AI model or parsing the response.
     """
     improvement_context = {"qa_pairs": qa_pairs, "feedback": feedback}
     return generate_qa_pairs(
-        client, model, text_content, learning_description, improvement_context
+        client,
+        model,
+        text_content,
+        learning_description,
+        improvement_context,
     )
 
 
-def build_anki_deck(qa_pairs: list[dict]) -> tuple:
-    """Build an Anki deck from Q&A pairs.
+def build_anki_deck(qa_pairs: Sequence[Flashcard]) -> tuple:
+    """Build an Anki deck from validated flashcards.
 
     Args:
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: Sequence of validated flashcards.
 
     Returns:
         tuple: A tuple containing (model, deck).
@@ -282,63 +304,48 @@ def build_anki_deck(qa_pairs: list[dict]) -> tuple:
     Raises:
         ValueError: If no valid Q&A pairs are found.
     """
+    cards = list(qa_pairs)
+    if not cards:
+        raise ValueError("No valid Q&A pairs found in the response")
+
     model = create_qa_model()
     deck = create_deck()
 
-    # Add notes to deck
-    for qa in qa_pairs:
-        if not isinstance(qa, dict):
-            continue
-
-        question = qa.get("question", "")
-        answer = qa.get("answer", "")
-
-        if not question or not answer:
-            continue
-
+    for card in cards:
         note = Note(
             model=model,
-            fields=[question, answer],
+            fields=[card.question, card.answer],
         )
         deck.add_note(note)
 
-    if len(deck.notes) == 0:
+    if len(deck.notes) == 0:  # pragma: no cover - defensive guard
         raise ValueError("No valid Q&A pairs found in the response")
 
     return model, deck
 
 
-def generate_md_report(qa_pairs: list[dict], output_path: str) -> str:
-    """Generate a markdown report file showing the Q&A pairs.
+def generate_md_report(qa_pairs: Sequence[Flashcard], output_path: str) -> str:
+    """Generate a markdown report file showing the flashcards.
 
     Args:
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: Sequence of flashcards to document.
         output_path: Path where the .apkg file will be saved.
 
     Returns:
         str: Path to the generated markdown file.
     """
-    # Generate markdown file path by replacing .apkg extension with .md
+    cards = list(qa_pairs)
     md_path = str(Path(output_path).with_suffix(".md"))
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("# Anki Cards Preview\n\n")
-        f.write(f"Total cards: {len(qa_pairs)}\n\n")
+        f.write(f"Total cards: {len(cards)}\n\n")
         f.write("---\n\n")
 
-        for idx, qa in enumerate(qa_pairs, start=1):
-            if not isinstance(qa, dict):
-                continue
-
-            question = qa.get("question", "")
-            answer = qa.get("answer", "")
-
-            if not question or not answer:
-                continue
-
+        for idx, card in enumerate(cards, start=1):
             f.write(f"## Card {idx}\n\n")
-            f.write(f"**Q:** {question}\n\n")
-            f.write(f"**A:** {answer}\n\n")
+            f.write(f"**Q:** {card.question}\n\n")
+            f.write(f"**A:** {card.answer}\n\n")
             f.write("---\n\n")
 
     return md_path
@@ -368,6 +375,7 @@ def generate_anki_cards(
     model: str = DEFAULT_MODEL,
     preview_only: bool = False,
     max_reflections: int = 1,
+    prompt_preset: str = "general",
 ):
     """Generate Anki cards from a text file using AI with reflection pattern.
 
@@ -393,6 +401,10 @@ def generate_anki_cards(
     # Initialize aisuite client
     client = ai.Client()
 
+    # Set prompt preset globally for this run
+    global _PROMPT_PRESET
+    _PROMPT_PRESET = cast_preset(prompt_preset)
+
     # Step 1: Initial generation
     print("Generating initial Q&A pairs...")
     qa_pairs = generate_qa_pairs(client, model, text_content, learning_description)
@@ -416,9 +428,8 @@ def generate_anki_cards(
         feedback = reflect_on_qa_pairs(
             client, model, qa_pairs, text_content, learning_description
         )
-        print(
-            f"Reflection complete. Overall quality: {feedback.get('overall_quality', 'unknown')}"
-        )
+        # feedback is a FlashcardFeedback model; access attribute directly
+        print(f"Reflection complete. Overall quality: {feedback.overall_quality}")
 
         # Improve Q&A pairs based on feedback
         qa_pairs = improve_qa_pairs(
@@ -438,3 +449,12 @@ def generate_anki_cards(
     print(f"\nSuccessfully generated {len(deck.notes)} Anki cards!")
     print(f"Saved to: {output_path}")
     print(f"Preview report saved to: {md_path}")
+
+
+def cast_preset(preset: str) -> str:
+    """Return a safe preset name, defaulting to 'general' if unknown."""
+    try:
+        normalized = preset.strip().lower()
+    except Exception:
+        return "general"
+    return normalized if normalized in AVAILABLE_PRESETS else "general"

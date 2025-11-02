@@ -1,19 +1,19 @@
 # Anything2Anki
 
-Generate Anki decks from plain text using an LLM (via the `aisuite` SDK). The tool reads a local text/Markdown file, asks a language model to extract clear Q&A pairs, and builds a `.apkg` file you can import into Anki.
+Generate Anki decks from plain text using an LLM (via the `aisuite` SDK). The tool reads a local text/Markdown file, asks a language model to extract clear Q&A pairs, and builds a `.apkg` file you can import into Anki. The generation is implemented as a workflow with Schema-Guided Reasoning (SGR): generation → reflection (judge evaluation) → improvement.
 
 - LLM provider: `aisuite` (OpenAI enabled by default)
-- Default model: `gpt5mini`
+- Default model: `openai:gpt-5-mini`
 - Output: Anki `.apkg` deck built with `genanki`
 
 ## How It Works
 
 1. Read input file contents (UTF‑8 text/Markdown).
-2. Build prompts: a fixed system prompt plus a user prompt with your learning objective and the file’s content.
-3. Call the LLM using `aisuite` with the selected `--model` (default `gpt5mini`).
-4. Parse the LLM response as a JSON array of objects `{ "question": ..., "answer": ... }`.
-5. Create a simple Q&A Anki model and deck using `genanki`.
-6. Write a Markdown preview report alongside the output showing all generated Q&A pairs.
+2. Build prompts: system + user prompts that embed your learning objective and the file’s content.
+3. Generation with SGR: call the LLM (`--model`, default `openai:gpt-5-mini`) to produce JSON flashcards matching a strict schema.
+4. Reflection (judge) with SGR: evaluate the cards to produce structured feedback (`FlashcardFeedback`). Controlled by `--max-reflections` (>0 enables; 0 disables).
+5. Improvement with SGR: regenerate cards using the feedback to refine clarity, coverage, and correctness.
+6. Create a simple Q&A Anki model and deck using `genanki` and write a Markdown preview report.
 7. Write a `.apkg` file ready to import into Anki.
 
 If the model returns non‑JSON output or no Q&A pairs, the run fails with a helpful error. Large inputs and poorly formatted content can reduce quality; consider pruning inputs to the most relevant sections.
@@ -67,7 +67,7 @@ Explicit output path and model:
 ```bash
 anything2anki input.md "Extract key concepts and definitions" \
   --output data/civics.apkg \
-  --model gpt5mini
+  --model openai:gpt-5-mini
 
 Preview only (skip .apkg, just write Markdown preview next to the would-be output path):
 
@@ -89,8 +89,15 @@ CLI options:
 - `file_path` (positional): Path to the input text/Markdown file.
 - `learning_description` (positional): What to learn/extract (drives the prompt).
 - `--output, -o`: Output `.apkg` path. Defaults to `<input>.apkg`.
-- `--model, -m`: LLM model (default `gpt5mini`).
+- `--model, -m`: LLM model (default `openai:gpt-5-mini`).
 - `--preview-only`: Only generate the Markdown preview report and skip creating the `.apkg` deck.
+- `--preset`: Prompt specialization preset to guide Schema-Guided Reasoning. Choices:
+  - `general` (default): balanced, clear fact extraction.
+  - `cloze`: atomic facts and short noun-phrase answers suited to cloze deletions.
+  - `concepts`: focuses on why/how questions and mechanisms over trivia.
+  - `procedures`: emphasizes step order, pre/postconditions, and workflows.
+  - `programming`: stresses API names, invariants, correctness, and edge cases.
+- `--max-reflections`: Number of reflection→improvement cycles (default: 1). Set to `0` to disable judge/improve loop.
 
 ### Python API
 
@@ -101,24 +108,94 @@ generate_anki_cards(
     file_path="input.txt",
     learning_description="Extract key concepts and definitions",
     output_path="output.apkg",
-    model="gpt5mini",  # optional, default shown
+    model="openai:gpt-5-mini",  # optional, default shown
+    preview_only=False,          # optional
+    max_reflections=1,           # optional: 0 disables reflection
+    prompt_preset="general",    # optional: general|cloze|concepts|procedures|programming
 )
 ```
 
 ## Models
 
-- Default: `gpt5mini`.
+- Default: `openai:gpt-5-mini`.
 - Override with `--model` or the `model` argument in the Python API.
-- Model naming follows `aisuite`’s conventions. If using a provider-qualified model like `openai:gpt-4o`, ensure credentials are configured.
+- Model naming follows `aisuite` conventions. If using a provider-qualified model like `openai:gpt-4o`, ensure credentials are configured.
 
 ## Workflow Details
 
-- Prompts: see `src/anything2anki/prompts.py` for the system and user templates. The user prompt embeds your learning description and full file contents, and instructs the model to return only a JSON array.
-- Parsing: the tool extracts the first `[` … last `]` slice to tolerate Markdown code fences, then parses JSON. If parsing fails, the original snippet is included in the error to aid debugging.
-- Deck/model: a simple two‑field “Question / Answer” model is defined in `src/anything2anki/anki_model.py` and a deck named "Generated Deck" is created. Each Q&A becomes one note.
-- Packaging: the deck is exported as `.apkg` using `genanki` and written to `--output`.
+- SGR prompts: see `src/anything2anki/prompts.py` for system prompts across three phases—generation, reflection (judge), and improvement—plus user prompts. Prompts enforce strict schemas for flashcards and feedback.
+- Parsing: generation extracts the first `[` … last `]` slice to tolerate Markdown fences, then validates against the pydantic schema. Reflection parses a JSON object into `FlashcardFeedback`.
+- Reflection and judge: the reflection step returns structured critique (strengths, weaknesses, recommendations, overall quality). The improvement step uses this to revise cards. Control cycles with `--max-reflections`.
+- Deck/model: a two‑field “Question / Answer” model in `src/anything2anki/anki_model.py`; deck named "Generated Deck". Each Q&A becomes one note.
+- Packaging: the deck is exported as `.apkg` using `genanki` and written to `--output`. A Markdown preview is written alongside the output path.
 
-Architecture: CLI → `workflow.generate_anki_cards` → `aisuite` LLM → JSON → Markdown preview → `genanki` deck → `.apkg`.
+### Architecture
+
+```mermaid
+flowchart TD
+    %% Styling
+    classDef inputOutput fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef generation fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+    classDef reflection fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef improvement fill:#ffe0b2,stroke:#e64a19,stroke-width:2px
+    classDef data fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px
+    classDef decision fill:#ffccbc,stroke:#d84315,stroke-width:2px
+
+    %% Nodes
+    INPUT[Input File]:::inputOutput
+    CLI[CLI Entry]:::inputOutput
+    ORCH[Workflow Orchestrator]:::generation
+    GEN[Generate Flashcards<br/>SGR Phase 1]:::generation
+    CARDS[Flashcards JSON]:::data
+    
+    DECISION{max_reflections > 0?}:::decision
+    
+    REFLECT[Reflect & Judge<br/>SGR Phase 2]:::reflection
+    FEEDBACK[Feedback JSON]:::data
+    IMPROVE[Improve Flashcards<br/>SGR Phase 3]:::improvement
+    
+    MARKDOWN[Markdown Preview]:::inputOutput
+    DECK[Build genanki Deck]:::generation
+    APKG[Output .apkg]:::inputOutput
+
+    %% Flow
+    INPUT --> CLI
+    CLI --> ORCH
+    ORCH --> GEN
+    GEN --> CARDS
+    CARDS --> DECISION
+    
+    DECISION -->|Yes| REFLECT
+    REFLECT --> FEEDBACK
+    FEEDBACK --> IMPROVE
+    IMPROVE --> CARDS
+    
+    DECISION -->|No| MARKDOWN
+    DECISION -->|No| DECK
+    
+    CARDS -.->|After loop| MARKDOWN
+    CARDS -.->|After loop| DECK
+    DECK --> APKG
+
+    %% Annotations
+    IMPROVE -.->|Loop: 1 to max_reflections cycles| REFLECT
+```
+
+### Schemas
+
+```mermaid
+classDiagram
+  class Flashcard {
+    +string question
+    +string answer
+  }
+  class FlashcardFeedback {
+    +List~string~ strengths
+    +List~string~ weaknesses
+    +List~string~ recommendations
+    +string overall_quality
+  }
+```
 
 ## Project Structure
 
