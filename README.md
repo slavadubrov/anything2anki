@@ -81,7 +81,7 @@ Run as a module (useful with `uv`):
 
 ```bash
 uv run python -m anything2anki data/input.md \
-  "Extract all terms and definitions" -o data/output.apkg
+  "Extract all terms and definitions" -o data/output.apkg --model openai:gpt-5
 ```
 
 CLI options:
