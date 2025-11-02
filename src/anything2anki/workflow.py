@@ -9,7 +9,13 @@ from genanki import Note, Package
 
 from .anki_model import create_deck, create_qa_model
 from .constants import DEFAULT_MODEL
-from .prompts import SYSTEM_PROMPT, create_user_prompt
+from .prompts import (
+    GENERATION_PROMPT,
+    IMPROVEMENT_PROMPT,
+    REFLECTION_PROMPT,
+    create_reflection_prompt,
+    create_user_prompt,
+)
 
 
 def validate_input_file(file_path: str) -> None:
@@ -125,6 +131,145 @@ def parse_ai_response(response_content: str) -> list[dict]:
     return qa_pairs
 
 
+def parse_feedback_response(response_content: str) -> dict:
+    """Extract and parse JSON feedback from the AI response.
+
+    Args:
+        response_content: The raw response content from the AI model.
+
+    Returns:
+        dict: A dictionary with feedback keys: strengths, weaknesses, recommendations, overall_quality.
+
+    Raises:
+        ValueError: If the response cannot be parsed as JSON or is invalid.
+    """
+    # Try to extract JSON from response (handle markdown code blocks)
+    json_start = response_content.find("{")
+    json_end = response_content.rfind("}") + 1
+
+    feedback = None
+    if json_start != -1 and json_end != 0:
+        json_str = response_content[json_start:json_end]
+        # Parse JSON object region
+        try:
+            feedback = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Could not parse JSON feedback: {e}. Response: {response_content[:500]}"
+            )
+    else:
+        # Fallback: try parsing the whole content as JSON
+        try:
+            feedback = json.loads(response_content)
+        except json.JSONDecodeError:
+            raise ValueError(
+                f"Could not find JSON object in response. Response: {response_content[:200]}"
+            )
+
+    if not isinstance(feedback, dict):
+        raise ValueError("JSON feedback response is not a dictionary")
+
+    # Validate required fields
+    required_fields = ["strengths", "weaknesses", "recommendations", "overall_quality"]
+    for field in required_fields:
+        if field not in feedback:
+            raise ValueError(f"Missing required field in feedback: {field}")
+
+    return feedback
+
+
+def generate_qa_pairs(
+    client: ai.Client,
+    model: str,
+    text_content: str,
+    learning_description: str,
+    improvement_context: dict | None = None,
+) -> list[dict]:
+    """Generate Q&A pairs from text content using AI.
+
+    Args:
+        client: The aisuite client instance.
+        model: The AI model to use.
+        text_content: The text content to process.
+        learning_description: Description of what to learn from the text.
+        improvement_context: Optional dict with 'qa_pairs' and 'feedback' for improvement.
+
+    Returns:
+        list[dict]: A list of Q&A pairs.
+
+    Raises:
+        Exception: If there's an error calling the AI model or parsing the response.
+    """
+    user_prompt = create_user_prompt(
+        text_content, learning_description, improvement_context
+    )
+    # Use IMPROVEMENT_PROMPT when improving, otherwise use GENERATION_PROMPT
+    system_prompt = IMPROVEMENT_PROMPT if improvement_context else GENERATION_PROMPT
+    response_content = call_ai_model(client, model, system_prompt, user_prompt)
+    return parse_ai_response(response_content)
+
+
+def reflect_on_qa_pairs(
+    client: ai.Client,
+    model: str,
+    qa_pairs: list[dict],
+    text_content: str,
+    learning_description: str,
+) -> dict:
+    """Review Q&A pairs and generate feedback for improvement.
+
+    Args:
+        client: The aisuite client instance.
+        model: The AI model to use.
+        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        text_content: The original source text.
+        learning_description: Description of what to learn from the text.
+
+    Returns:
+        dict: Feedback dictionary with strengths, weaknesses, recommendations, overall_quality.
+
+    Raises:
+        Exception: If there's an error calling the AI model or parsing the response.
+    """
+    reflection_prompt = create_reflection_prompt(
+        qa_pairs, text_content, learning_description
+    )
+    response_content = call_ai_model(
+        client, model, REFLECTION_PROMPT, reflection_prompt
+    )
+    return parse_feedback_response(response_content)
+
+
+def improve_qa_pairs(
+    client: ai.Client,
+    model: str,
+    qa_pairs: list[dict],
+    feedback: dict,
+    text_content: str,
+    learning_description: str,
+) -> list[dict]:
+    """Generate improved Q&A pairs based on feedback.
+
+    Args:
+        client: The aisuite client instance.
+        model: The AI model to use.
+        qa_pairs: Original list of Q&A pairs.
+        feedback: Feedback dictionary from reflection step.
+        text_content: The original source text.
+        learning_description: Description of what to learn from the text.
+
+    Returns:
+        list[dict]: Improved list of Q&A pairs.
+
+    Raises:
+        Exception: If there's an error calling the AI model or parsing the response.
+    """
+    improvement_context = {"qa_pairs": qa_pairs, "feedback": feedback}
+    return generate_qa_pairs(
+        client, model, text_content, learning_description, improvement_context
+    )
+
+
 def build_anki_deck(qa_pairs: list[dict]) -> tuple:
     """Build an Anki deck from Q&A pairs.
 
@@ -222,8 +367,9 @@ def generate_anki_cards(
     output_path: str,
     model: str = DEFAULT_MODEL,
     preview_only: bool = False,
+    max_reflections: int = 1,
 ):
-    """Generate Anki cards from a text file using AI.
+    """Generate Anki cards from a text file using AI with reflection pattern.
 
     Args:
         file_path: Path to the input text file.
@@ -231,6 +377,7 @@ def generate_anki_cards(
         output_path: Path where the .apkg file should be saved.
         model: AI model to use (default: DEFAULT_MODEL).
         preview_only: If True, generate only the Markdown preview and skip .apkg creation.
+        max_reflections: Maximum number of reflection-improvement cycles (default: 1).
 
     Raises:
         FileNotFoundError: If the input file doesn't exist.
@@ -246,22 +393,41 @@ def generate_anki_cards(
     # Initialize aisuite client
     client = ai.Client()
 
-    # Create prompts
-    user_prompt = create_user_prompt(text_content, learning_description)
+    # Step 1: Initial generation
+    print("Generating initial Q&A pairs...")
+    qa_pairs = generate_qa_pairs(client, model, text_content, learning_description)
+    print(f"Generated {len(qa_pairs)} initial Q&A pairs")
 
-    # Call AI model
-    response_content = call_ai_model(client, model, SYSTEM_PROMPT, user_prompt)
+    # If no pairs were generated initially, bail out before reflection
+    if not qa_pairs:
+        raise ValueError("No valid Q&A pairs found")
 
-    # Parse AI response
-    qa_pairs = parse_ai_response(response_content)
+    # If preview-only, generate the markdown now and return without reflection
+    if preview_only:
+        md_path = generate_md_report(qa_pairs, output_path)
+        print(f"\nPreview report saved to: {md_path}")
+        return
+
+    # Step 2: Reflection and improvement loop (only when we have some pairs)
+    for reflection_num in range(max_reflections):
+        print(f"\nReflection cycle {reflection_num + 1}/{max_reflections}...")
+
+        # Reflect on current Q&A pairs
+        feedback = reflect_on_qa_pairs(
+            client, model, qa_pairs, text_content, learning_description
+        )
+        print(
+            f"Reflection complete. Overall quality: {feedback.get('overall_quality', 'unknown')}"
+        )
+
+        # Improve Q&A pairs based on feedback
+        qa_pairs = improve_qa_pairs(
+            client, model, qa_pairs, feedback, text_content, learning_description
+        )
+        print(f"Improved to {len(qa_pairs)} Q&A pairs")
 
     # Generate markdown report
     md_path = generate_md_report(qa_pairs, output_path)
-
-    # If preview-only, skip building/writing the Anki package
-    if preview_only:
-        print(f"Preview report saved to: {md_path}")
-        return
 
     # Build Anki deck
     _, deck = build_anki_deck(qa_pairs)
@@ -269,6 +435,6 @@ def generate_anki_cards(
     # Write Anki package
     write_anki_package(deck, output_path)
 
-    print(f"Successfully generated {len(deck.notes)} Anki cards!")
+    print(f"\nSuccessfully generated {len(deck.notes)} Anki cards!")
     print(f"Saved to: {output_path}")
     print(f"Preview report saved to: {md_path}")
