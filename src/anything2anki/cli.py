@@ -1,0 +1,61 @@
+"""Command-line interface for anything2anki."""
+
+import argparse
+import sys
+from pathlib import Path
+
+from .workflow import generate_anki_cards
+
+
+def main():
+    """Main CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Generate Anki cards from text files using AI"
+    )
+    parser.add_argument(
+        "file_path",
+        type=str,
+        help="Path to the input text file",
+    )
+    parser.add_argument(
+        "learning_description",
+        type=str,
+        help="Description of what to learn from the file",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=str,
+        default=None,
+        help="Output path for the .apkg file (default: <input_filename>.apkg)",
+    )
+    parser.add_argument(
+        "--model",
+        "-m",
+        type=str,
+        default="openai:gpt-4o",
+        help='AI model to use (default: "openai:gpt-4o")',
+    )
+
+    args = parser.parse_args()
+
+    # Generate output path if not provided
+    if args.output is None:
+        input_path = Path(args.file_path)
+        args.output = str(input_path.with_suffix(".apkg"))
+
+    # Run workflow
+    try:
+        generate_anki_cards(
+            file_path=args.file_path,
+            learning_description=args.learning_description,
+            output_path=args.output,
+            model=args.model,
+        )
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
