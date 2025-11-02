@@ -4,7 +4,7 @@
 
 - `src/anything2anki/`: Python package.
   - `cli.py`: CLI argument parsing and entry.
-  - `workflow.py`: Core logic (LLM call, JSON parsing, deck build).
+  - `workflow.py`: Core workflow (SGR-driven generation → reflection/judge → improvement; LLM calls, JSON parsing, deck build).
   - `anki_model.py`: Deck/model definitions using `genanki`.
   - `prompts.py`: System/user prompt templates.
   - `__main__.py`: Enables `python -m anything2anki`.
@@ -20,6 +20,11 @@
   - Installed: `anything2anki input.txt "What to learn" -o deck.apkg`
   - Module: `uv run python -m anything2anki input.txt "What to learn" -o deck.apkg`
 - Tests (when present): `uv run pytest tests/`
+
+Flags of note:
+
+- `--preset` to select prompt specialization (guides SGR behavior: `general|cloze|concepts|procedures|programming`).
+- `--max-reflections` to control reflection→improvement cycles (`0` disables judge/improve loop).
 
 ## Coding Style & Naming Conventions
 
@@ -45,11 +50,23 @@
 
 - Secrets: copy `.env.example` to `.env`; set `OPENAI_API_KEY`. Do not commit `.env` or secrets.
 - Generated artifacts: do not commit `.apkg` files; treat them as local outputs.
-- The model can be changed via `--model` (default `gpt5mini`).
+- The model can be changed via `--model` (default `openai:gpt-5-mini`).
 
 ## Architecture Overview
 
-- Flow: CLI → `workflow.generate_anki_cards` → `aisuite` LLM → JSON → `genanki` deck → `.apkg`.
+```mermaid
+flowchart LR
+  A[CLI] --> B[workflow.generate_anki_cards]
+  B --> C[SGR Generation]
+  C --> D[Flashcards JSON]
+  D --> E[SGR Reflection Judge]
+  E --> F[Feedback JSON]
+  F --> G[SGR Improvement]
+  G --> D
+  D --> H[genanki Deck]
+  H --> I[.apkg]
+  D --> J[Markdown Preview]
+```
 
 ## Agent-Specific Instructions
 
