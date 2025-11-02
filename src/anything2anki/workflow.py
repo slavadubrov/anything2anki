@@ -1,11 +1,12 @@
 """Main workflow for generating Anki cards from text files using AI."""
 
-import json
 import os
 from pathlib import Path
+from typing import Sequence
 
 import aisuite as ai
 from genanki import Note, Package
+from pydantic import ValidationError
 
 from .anki_model import create_deck, create_qa_model
 from .constants import DEFAULT_MODEL
@@ -16,6 +17,7 @@ from .prompts import (
     create_reflection_prompt,
     create_user_prompt,
 )
+from .schemas import Flashcard, FlashcardFeedback, FlashcardList, FlashcardValidationError
 
 
 def validate_input_file(file_path: str) -> None:
@@ -91,14 +93,14 @@ def call_ai_model(
     return response.choices[0].message.content.strip()
 
 
-def parse_ai_response(response_content: str) -> list[dict]:
-    """Extract and parse JSON from the AI response.
+def parse_ai_response(response_content: str) -> list[Flashcard]:
+    """Extract and parse flashcards from the AI response.
 
     Args:
         response_content: The raw response content from the AI model.
 
     Returns:
-        list[dict]: A list of Q&A pairs.
+        list[Flashcard]: A list of validated flashcards.
 
     Raises:
         ValueError: If the response cannot be parsed as JSON or is invalid.
@@ -114,31 +116,25 @@ def parse_ai_response(response_content: str) -> list[dict]:
 
     json_str = response_content[json_start:json_end]
 
-    # Parse JSON
     try:
-        qa_pairs = json.loads(json_str)
-    except json.JSONDecodeError as e:
+        qa_pairs = FlashcardList.model_validate_json(json_str)
+    except ValidationError as err:
+        formatted_error = FlashcardValidationError.from_validation_error(err)
         raise ValueError(
-            f"Could not parse JSON response: {e}. Response: {response_content[:500]}"
-        )
+            f"Flashcard schema validation failed: {formatted_error}. Response: {response_content[:500]}"
+        ) from err
 
-    if not isinstance(qa_pairs, list):
-        raise ValueError("JSON response is not a list")
-
-    if len(qa_pairs) == 0:
-        raise ValueError("No Q&A pairs generated from the text")
-
-    return qa_pairs
+    return qa_pairs.root
 
 
-def parse_feedback_response(response_content: str) -> dict:
-    """Extract and parse JSON feedback from the AI response.
+def parse_feedback_response(response_content: str) -> FlashcardFeedback:
+    """Extract and parse structured feedback from the AI response.
 
     Args:
         response_content: The raw response content from the AI model.
 
     Returns:
-        dict: A dictionary with feedback keys: strengths, weaknesses, recommendations, overall_quality.
+        FlashcardFeedback: Structured feedback covering strengths, weaknesses, recommendations, and overall quality.
 
     Raises:
         ValueError: If the response cannot be parsed as JSON or is invalid.
@@ -150,30 +146,17 @@ def parse_feedback_response(response_content: str) -> dict:
     feedback = None
     if json_start != -1 and json_end != 0:
         json_str = response_content[json_start:json_end]
-        # Parse JSON object region
-        try:
-            feedback = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Could not parse JSON feedback: {e}. Response: {response_content[:500]}"
-            )
+        target = json_str
     else:
-        # Fallback: try parsing the whole content as JSON
-        try:
-            feedback = json.loads(response_content)
-        except json.JSONDecodeError:
-            raise ValueError(
-                f"Could not find JSON object in response. Response: {response_content[:200]}"
-            )
+        target = response_content
 
-    if not isinstance(feedback, dict):
-        raise ValueError("JSON feedback response is not a dictionary")
-
-    # Validate required fields
-    required_fields = ["strengths", "weaknesses", "recommendations", "overall_quality"]
-    for field in required_fields:
-        if field not in feedback:
-            raise ValueError(f"Missing required field in feedback: {field}")
+    try:
+        feedback = FlashcardFeedback.model_validate_json(target)
+    except ValidationError as err:
+        formatted_error = FlashcardValidationError.from_validation_error(err)
+        raise ValueError(
+            f"Feedback schema validation failed: {formatted_error}. Response: {response_content[:500]}"
+        ) from err
 
     return feedback
 
@@ -184,7 +167,7 @@ def generate_qa_pairs(
     text_content: str,
     learning_description: str,
     improvement_context: dict | None = None,
-) -> list[dict]:
+) -> list[Flashcard]:
     """Generate Q&A pairs from text content using AI.
 
     Args:
@@ -195,7 +178,7 @@ def generate_qa_pairs(
         improvement_context: Optional dict with 'qa_pairs' and 'feedback' for improvement.
 
     Returns:
-        list[dict]: A list of Q&A pairs.
+        list[Flashcard]: A list of validated flashcards.
 
     Raises:
         Exception: If there's an error calling the AI model or parsing the response.
@@ -212,21 +195,21 @@ def generate_qa_pairs(
 def reflect_on_qa_pairs(
     client: ai.Client,
     model: str,
-    qa_pairs: list[dict],
+    qa_pairs: list[Flashcard],
     text_content: str,
     learning_description: str,
-) -> dict:
+) -> FlashcardFeedback:
     """Review Q&A pairs and generate feedback for improvement.
 
     Args:
         client: The aisuite client instance.
         model: The AI model to use.
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: List of generated flashcards to review.
         text_content: The original source text.
         learning_description: Description of what to learn from the text.
 
     Returns:
-        dict: Feedback dictionary with strengths, weaknesses, recommendations, overall_quality.
+        FlashcardFeedback: Structured feedback capturing strengths, weaknesses, recommendations, and overall quality.
 
     Raises:
         Exception: If there's an error calling the AI model or parsing the response.
@@ -243,23 +226,23 @@ def reflect_on_qa_pairs(
 def improve_qa_pairs(
     client: ai.Client,
     model: str,
-    qa_pairs: list[dict],
-    feedback: dict,
+    qa_pairs: list[Flashcard],
+    feedback: FlashcardFeedback,
     text_content: str,
     learning_description: str,
-) -> list[dict]:
+) -> list[Flashcard]:
     """Generate improved Q&A pairs based on feedback.
 
     Args:
         client: The aisuite client instance.
         model: The AI model to use.
-        qa_pairs: Original list of Q&A pairs.
-        feedback: Feedback dictionary from reflection step.
+        qa_pairs: Original list of flashcards.
+        feedback: Structured feedback from the reflection step.
         text_content: The original source text.
         learning_description: Description of what to learn from the text.
 
     Returns:
-        list[dict]: Improved list of Q&A pairs.
+        list[Flashcard]: Improved list of flashcards.
 
     Raises:
         Exception: If there's an error calling the AI model or parsing the response.
@@ -270,11 +253,11 @@ def improve_qa_pairs(
     )
 
 
-def build_anki_deck(qa_pairs: list[dict]) -> tuple:
-    """Build an Anki deck from Q&A pairs.
+def build_anki_deck(qa_pairs: Sequence[Flashcard]) -> tuple:
+    """Build an Anki deck from validated flashcards.
 
     Args:
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: Sequence of validated flashcards.
 
     Returns:
         tuple: A tuple containing (model, deck).
@@ -282,63 +265,48 @@ def build_anki_deck(qa_pairs: list[dict]) -> tuple:
     Raises:
         ValueError: If no valid Q&A pairs are found.
     """
+    cards = list(qa_pairs)
+    if not cards:
+        raise ValueError("No valid Q&A pairs found in the response")
+
     model = create_qa_model()
     deck = create_deck()
 
-    # Add notes to deck
-    for qa in qa_pairs:
-        if not isinstance(qa, dict):
-            continue
-
-        question = qa.get("question", "")
-        answer = qa.get("answer", "")
-
-        if not question or not answer:
-            continue
-
+    for card in cards:
         note = Note(
             model=model,
-            fields=[question, answer],
+            fields=[card.question, card.answer],
         )
         deck.add_note(note)
 
-    if len(deck.notes) == 0:
+    if len(deck.notes) == 0:  # pragma: no cover - defensive guard
         raise ValueError("No valid Q&A pairs found in the response")
 
     return model, deck
 
 
-def generate_md_report(qa_pairs: list[dict], output_path: str) -> str:
-    """Generate a markdown report file showing the Q&A pairs.
+def generate_md_report(qa_pairs: Sequence[Flashcard], output_path: str) -> str:
+    """Generate a markdown report file showing the flashcards.
 
     Args:
-        qa_pairs: List of dictionaries with "question" and "answer" keys.
+        qa_pairs: Sequence of flashcards to document.
         output_path: Path where the .apkg file will be saved.
 
     Returns:
         str: Path to the generated markdown file.
     """
-    # Generate markdown file path by replacing .apkg extension with .md
+    cards = list(qa_pairs)
     md_path = str(Path(output_path).with_suffix(".md"))
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("# Anki Cards Preview\n\n")
-        f.write(f"Total cards: {len(qa_pairs)}\n\n")
+        f.write(f"Total cards: {len(cards)}\n\n")
         f.write("---\n\n")
 
-        for idx, qa in enumerate(qa_pairs, start=1):
-            if not isinstance(qa, dict):
-                continue
-
-            question = qa.get("question", "")
-            answer = qa.get("answer", "")
-
-            if not question or not answer:
-                continue
-
+        for idx, card in enumerate(cards, start=1):
             f.write(f"## Card {idx}\n\n")
-            f.write(f"**Q:** {question}\n\n")
-            f.write(f"**A:** {answer}\n\n")
+            f.write(f"**Q:** {card.question}\n\n")
+            f.write(f"**A:** {card.answer}\n\n")
             f.write("---\n\n")
 
     return md_path

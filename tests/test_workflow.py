@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from anything2anki.schemas import Flashcard, FlashcardFeedback
 from anything2anki.workflow import (
     build_anki_deck,
     call_ai_model,
@@ -123,7 +124,7 @@ class TestParseAiResponse:
         ]
         response = json.dumps(qa_pairs)
         result = parse_ai_response(response)
-        assert result == qa_pairs
+        assert [card.model_dump() for card in result] == qa_pairs
 
     def test_parse_ai_response_with_markdown(self):
         """Test parsing JSON wrapped in markdown code blocks."""
@@ -133,7 +134,7 @@ class TestParseAiResponse:
         ]
         response = f"Here's the JSON:\n```json\n{json.dumps(qa_pairs)}\n```"
         result = parse_ai_response(response)
-        assert result == qa_pairs
+        assert [card.model_dump() for card in result] == qa_pairs
 
     def test_parse_ai_response_no_json_array(self):
         """Test parsing response without JSON array raises ValueError."""
@@ -156,7 +157,7 @@ class TestParseAiResponse:
     def test_parse_ai_response_empty_list(self):
         """Test parsing empty list raises ValueError."""
         response = "[]"
-        with pytest.raises(ValueError, match="No Q&A pairs generated"):
+        with pytest.raises(ValueError, match="Flashcard schema validation failed"):
             parse_ai_response(response)
 
 
@@ -166,42 +167,35 @@ class TestBuildAnkiDeck:
     def test_build_anki_deck_valid_pairs(self):
         """Test building deck with valid Q&A pairs."""
         qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "Q2", "answer": "A2"},
+            Flashcard(question="Q1", answer="A1"),
+            Flashcard(question="Q2", answer="A2"),
         ]
         model, deck = build_anki_deck(qa_pairs)
         assert model is not None
         assert deck is not None
         assert len(deck.notes) == 2
 
-    def test_build_anki_deck_invalid_dict(self):
-        """Test building deck skips invalid dictionaries."""
-        qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            "not a dict",
-            {"question": "Q2", "answer": "A2"},
-        ]
-        model, deck = build_anki_deck(qa_pairs)
+    def test_build_anki_deck_accepts_sequence(self):
+        """Test building deck accepts any flashcard sequence."""
+        qa_pairs = (
+            Flashcard(question="Q1", answer="A1"),
+            Flashcard(question="Q2", answer="A2"),
+        )
+        _, deck = build_anki_deck(qa_pairs)
         assert len(deck.notes) == 2
 
-    def test_build_anki_deck_missing_fields(self):
-        """Test building deck skips pairs with missing fields."""
+    def test_build_anki_deck_trims_fields(self):
+        """Flashcard validators should trim whitespace before deck creation."""
         qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "Q2"},  # missing answer
-            {"answer": "A3"},  # missing question
-            {"question": "", "answer": "A4"},  # empty question
-            {"question": "Q5", "answer": ""},  # empty answer
+            Flashcard(question="  Q1  ", answer="  A1  "),
+            Flashcard(question="Q2", answer="A2"),
         ]
-        model, deck = build_anki_deck(qa_pairs)
-        assert len(deck.notes) == 1
+        _, deck = build_anki_deck(qa_pairs)
+        assert deck.notes[0].fields == ["Q1", "A1"]
 
     def test_build_anki_deck_no_valid_pairs(self):
         """Test building deck with no valid pairs raises ValueError."""
-        qa_pairs = [
-            {"question": "", "answer": "A1"},
-            {"question": "Q2"},
-        ]
+        qa_pairs: list[Flashcard] = []
         with pytest.raises(ValueError, match="No valid Q&A pairs found"):
             build_anki_deck(qa_pairs)
 
@@ -217,8 +211,8 @@ class TestGenerateMdReport:
     def test_generate_md_report_success(self, tmp_path):
         """Test successful MD report generation."""
         qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "Q2", "answer": "A2"},
+            Flashcard(question="Q1", answer="A1"),
+            Flashcard(question="Q2", answer="A2"),
         ]
         output_path = str(tmp_path / "deck.apkg")
         md_path = generate_md_report(qa_pairs, output_path)
@@ -235,27 +229,19 @@ class TestGenerateMdReport:
         assert "**Q:** Q2" in content
         assert "**A:** A2" in content
 
-    def test_generate_md_report_filters_invalid(self, tmp_path):
-        """Test MD report generation filters invalid pairs."""
+    def test_generate_md_report_preserves_order(self, tmp_path):
+        """Markdown report should list flashcards in order."""
         qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "", "answer": "A2"},  # invalid
-            "not a dict",  # invalid
-            {"question": "Q3", "answer": "A3"},
+            Flashcard(question="First", answer="One"),
+            Flashcard(question="Second", answer="Two"),
+            Flashcard(question="Third", answer="Three"),
         ]
         output_path = str(tmp_path / "deck.apkg")
         md_path = generate_md_report(qa_pairs, output_path)
 
         content = Path(md_path).read_text(encoding="utf-8")
-        assert "Total cards: 4" in content  # Count includes all
-        assert "## Card 1" in content
-        assert "**Q:** Q1" in content
-        assert "## Card 4" in content  # Card 4 is the 4th item in list (skips invalid)
-        assert "**Q:** Q3" in content
-        # Verify invalid pairs are not included
-        assert "A2" not in content  # Invalid pair should not appear
-        assert "Card 2" not in content
-        assert "Card 3" not in content
+        assert "Total cards: 3" in content
+        assert content.index("First") < content.index("Second") < content.index("Third")
 
 
 class TestWriteAnkiPackage:
@@ -301,7 +287,7 @@ class TestParseFeedbackResponse:
         }
         response = json.dumps(feedback)
         result = parse_feedback_response(response)
-        assert result == feedback
+        assert result.model_dump() == feedback
 
     def test_parse_feedback_response_with_markdown(self):
         """Test parsing JSON wrapped in markdown code blocks."""
@@ -313,7 +299,7 @@ class TestParseFeedbackResponse:
         }
         response = f"Here's the feedback:\n```json\n{json.dumps(feedback)}\n```"
         result = parse_feedback_response(response)
-        assert result == feedback
+        assert result.model_dump() == feedback
 
     def test_parse_feedback_response_no_json_object(self):
         """Test parsing response without JSON object raises ValueError."""
@@ -333,7 +319,7 @@ class TestParseFeedbackResponse:
         """Test parsing feedback with missing required fields raises ValueError."""
         feedback = {"strengths": ["Good"]}
         response = json.dumps(feedback)
-        with pytest.raises(ValueError, match="Missing required field in feedback"):
+        with pytest.raises(ValueError, match="Feedback schema validation failed"):
             parse_feedback_response(response)
 
 
@@ -350,7 +336,7 @@ class TestGenerateQaPairs:
         mock_client = MagicMock()
         mock_create_prompt.return_value = "user prompt"
         mock_call_ai.return_value = "response content"
-        qa_pairs = [{"question": "Q1", "answer": "A1"}]
+        qa_pairs = [Flashcard(question="Q1", answer="A1")]
         mock_parse.return_value = qa_pairs
 
         result = generate_qa_pairs(mock_client, "test-model", "text", "description")
@@ -369,12 +355,17 @@ class TestGenerateQaPairs:
         """Test Q&A pair generation with improvement context."""
         mock_client = MagicMock()
         improvement_context = {
-            "qa_pairs": [{"question": "Q1", "answer": "A1"}],
-            "feedback": {"overall_quality": "good"},
+            "qa_pairs": [Flashcard(question="Q1", answer="A1")],
+            "feedback": FlashcardFeedback(
+                strengths=["Clear"],
+                weaknesses=["Short"],
+                recommendations=["Expand"],
+                overall_quality="good",
+            ),
         }
         mock_create_prompt.return_value = "user prompt"
         mock_call_ai.return_value = "response content"
-        qa_pairs = [{"question": "Q2", "answer": "A2"}]
+        qa_pairs = [Flashcard(question="Q2", answer="A2")]
         mock_parse.return_value = qa_pairs
 
         result = generate_qa_pairs(
@@ -402,15 +393,15 @@ class TestReflectOnQaPairs:
     ):
         """Test successful reflection on Q&A pairs."""
         mock_client = MagicMock()
-        qa_pairs = [{"question": "Q1", "answer": "A1"}]
+        qa_pairs = [Flashcard(question="Q1", answer="A1")]
         mock_create_prompt.return_value = "reflection prompt"
         mock_call_ai.return_value = "feedback response"
-        feedback = {
-            "strengths": ["Good"],
-            "weaknesses": ["Missing concept"],
-            "recommendations": ["Add question"],
-            "overall_quality": "good",
-        }
+        feedback = FlashcardFeedback(
+            strengths=["Good"],
+            weaknesses=["Missing concept"],
+            recommendations=["Add question"],
+            overall_quality="good",
+        )
         mock_parse.return_value = feedback
 
         result = reflect_on_qa_pairs(
@@ -430,16 +421,16 @@ class TestImproveQaPairs:
     def test_improve_qa_pairs_success(self, mock_generate):
         """Test successful Q&A pair improvement."""
         mock_client = MagicMock()
-        original_pairs = [{"question": "Q1", "answer": "A1"}]
-        feedback = {
-            "strengths": ["Good"],
-            "weaknesses": ["Missing concept"],
-            "recommendations": ["Add question"],
-            "overall_quality": "good",
-        }
+        original_pairs = [Flashcard(question="Q1", answer="A1")]
+        feedback = FlashcardFeedback(
+            strengths=["Good"],
+            weaknesses=["Missing concept"],
+            recommendations=["Add question"],
+            overall_quality="good",
+        )
         improved_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "Q2", "answer": "A2"},
+            Flashcard(question="Q1", answer="A1"),
+            Flashcard(question="Q2", answer="A2"),
         ]
         mock_generate.return_value = improved_pairs
 
@@ -492,18 +483,18 @@ class TestGenerateAnkiCardsIntegration:
         mock_client_class.return_value = mock_client
 
         qa_pairs_v1 = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "Q2", "answer": "A2"},
+            Flashcard(question="Q1", answer="A1"),
+            Flashcard(question="Q2", answer="A2"),
         ]
-        feedback = {
-            "strengths": ["Clear questions"],
-            "weaknesses": ["Could be more comprehensive"],
-            "recommendations": ["Add more details"],
-            "overall_quality": "good",
-        }
+        feedback = FlashcardFeedback(
+            strengths=["Clear questions"],
+            weaknesses=["Could be more comprehensive"],
+            recommendations=["Add more details"],
+            overall_quality="good",
+        )
         qa_pairs_v2 = [
-            {"question": "Q1", "answer": "A1 improved"},
-            {"question": "Q2", "answer": "A2 improved"},
+            Flashcard(question="Q1", answer="A1 improved"),
+            Flashcard(question="Q2", answer="A2 improved"),
         ]
 
         mock_generate_qa.return_value = qa_pairs_v1
@@ -557,8 +548,8 @@ class TestGenerateAnkiCardsIntegration:
         mock_client_class.return_value = mock_client
 
         qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
-            {"question": "Q2", "answer": "A2"},
+            Flashcard(question="Q1", answer="A1"),
+            Flashcard(question="Q2", answer="A2"),
         ]
         mock_generate_qa.return_value = qa_pairs
 
@@ -637,7 +628,7 @@ class TestGenerateAnkiCardsIntegration:
         mock_client_class.return_value = mock_client
 
         qa_pairs = [
-            {"question": "Q1", "answer": "A1"},
+            Flashcard(question="Q1", answer="A1"),
         ]
         mock_generate_qa.return_value = qa_pairs
 
