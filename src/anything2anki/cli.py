@@ -1,10 +1,11 @@
 """Command-line interface for anything2anki."""
 
 import argparse
-import sys
 from pathlib import Path
+import sys
 
 from .constants import DEFAULT_MODEL
+from .prompts import AVAILABLE_PRESETS
 from .workflow import generate_anki_cards
 
 
@@ -48,6 +49,17 @@ def main():
         default=1,
         help="Maximum number of reflection-improvement cycles (default: 1)",
     )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default="general",
+        choices=list(AVAILABLE_PRESETS),
+        help=(
+            "Prompt specialization preset. Choices: "
+            + ", ".join(AVAILABLE_PRESETS)
+            + ". Default: general"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -65,6 +77,7 @@ def main():
             model=args.model,
             preview_only=args.preview_only,
             max_reflections=args.max_reflections,
+            prompt_preset=args.preset,
         )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

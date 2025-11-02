@@ -1,7 +1,7 @@
 """Main workflow for generating Anki cards from text files using AI."""
 
-import os
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -12,11 +12,10 @@ from pydantic import ValidationError
 from .anki_model import create_deck, create_qa_model
 from .constants import DEFAULT_MODEL
 from .prompts import (
-    GENERATION_PROMPT,
-    IMPROVEMENT_PROMPT,
-    REFLECTION_PROMPT,
+    AVAILABLE_PRESETS,
     create_reflection_prompt,
     create_user_prompt,
+    get_system_prompts,
 )
 from .schemas import (
     Flashcard,
@@ -24,6 +23,8 @@ from .schemas import (
     FlashcardList,
     FlashcardValidationError,
 )
+
+_PROMPT_PRESET = "general"
 
 
 def validate_input_file(file_path: str) -> None:
@@ -195,6 +196,7 @@ def generate_qa_pairs(
     text_content: str,
     learning_description: str,
     improvement_context: dict | None = None,
+    prompt_preset: str | None = None,
 ) -> list[Flashcard]:
     """Generate Q&A pairs from text content using AI.
 
@@ -214,8 +216,9 @@ def generate_qa_pairs(
     user_prompt = create_user_prompt(
         text_content, learning_description, improvement_context
     )
-    # Use IMPROVEMENT_PROMPT when improving, otherwise use GENERATION_PROMPT
-    system_prompt = IMPROVEMENT_PROMPT if improvement_context else GENERATION_PROMPT
+    preset = cast_preset(prompt_preset or _PROMPT_PRESET)
+    gen_prompt, _, imp_prompt = get_system_prompts(preset)
+    system_prompt = imp_prompt if improvement_context else gen_prompt
     response_content = call_ai_model(client, model, system_prompt, user_prompt)
     return parse_ai_response(response_content)
 
@@ -226,6 +229,7 @@ def reflect_on_qa_pairs(
     qa_pairs: list[Flashcard],
     text_content: str,
     learning_description: str,
+    prompt_preset: str | None = None,
 ) -> FlashcardFeedback:
     """Review Q&A pairs and generate feedback for improvement.
 
@@ -245,8 +249,10 @@ def reflect_on_qa_pairs(
     reflection_prompt = create_reflection_prompt(
         qa_pairs, text_content, learning_description
     )
+    preset = cast_preset(prompt_preset or _PROMPT_PRESET)
+    _, reflection_system, _ = get_system_prompts(preset)
     response_content = call_ai_model(
-        client, model, REFLECTION_PROMPT, reflection_prompt
+        client, model, reflection_system, reflection_prompt
     )
     return parse_feedback_response(response_content)
 
@@ -258,6 +264,7 @@ def improve_qa_pairs(
     feedback: FlashcardFeedback,
     text_content: str,
     learning_description: str,
+    prompt_preset: str | None = None,
 ) -> list[Flashcard]:
     """Generate improved Q&A pairs based on feedback.
 
@@ -277,7 +284,11 @@ def improve_qa_pairs(
     """
     improvement_context = {"qa_pairs": qa_pairs, "feedback": feedback}
     return generate_qa_pairs(
-        client, model, text_content, learning_description, improvement_context
+        client,
+        model,
+        text_content,
+        learning_description,
+        improvement_context,
     )
 
 
@@ -364,6 +375,7 @@ def generate_anki_cards(
     model: str = DEFAULT_MODEL,
     preview_only: bool = False,
     max_reflections: int = 1,
+    prompt_preset: str = "general",
 ):
     """Generate Anki cards from a text file using AI with reflection pattern.
 
@@ -388,6 +400,10 @@ def generate_anki_cards(
 
     # Initialize aisuite client
     client = ai.Client()
+
+    # Set prompt preset globally for this run
+    global _PROMPT_PRESET
+    _PROMPT_PRESET = cast_preset(prompt_preset)
 
     # Step 1: Initial generation
     print("Generating initial Q&A pairs...")
@@ -433,3 +449,12 @@ def generate_anki_cards(
     print(f"\nSuccessfully generated {len(deck.notes)} Anki cards!")
     print(f"Saved to: {output_path}")
     print(f"Preview report saved to: {md_path}")
+
+
+def cast_preset(preset: str) -> str:
+    """Return a safe preset name, defaulting to 'general' if unknown."""
+    try:
+        normalized = preset.strip().lower()
+    except Exception:
+        return "general"
+    return normalized if normalized in AVAILABLE_PRESETS else "general"

@@ -1,10 +1,7 @@
 """Pydantic models describing the Anything2Anki data structures."""
 
-from __future__ import annotations
-
-from typing import Iterable, Sequence
-
 import json
+from typing import Iterable, Sequence
 
 from pydantic import (
     BaseModel,
@@ -125,3 +122,12 @@ class FlashcardValidationError(ValueError):
     @classmethod
     def from_validation_error(cls, err: ValidationError) -> "FlashcardValidationError":
         return cls(str(err))
+
+
+# JSON schema strings for prompting (defined alongside models)
+FLASHCARD_SCHEMA = json.dumps(
+    FlashcardList.model_json_schema(), indent=2, ensure_ascii=False
+)
+FEEDBACK_SCHEMA = json.dumps(
+    FlashcardFeedback.model_json_schema(), indent=2, ensure_ascii=False
+)

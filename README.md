@@ -10,7 +10,7 @@ Generate Anki decks from plain text using an LLM (via the `aisuite` SDK). The to
 
 1. Read input file contents (UTF‑8 text/Markdown).
 2. Build prompts: a fixed system prompt plus a user prompt with your learning objective and the file’s content.
-3. Call the LLM using `aisuite` with the selected `--model` (default `gpt5mini`).
+3. Call the LLM using `aisuite` with the selected `--model` (default `gpt5mini`) and an optional prompt specialization `--preset` (default `general`).
 4. Parse the LLM response as a JSON array of objects `{ "question": ..., "answer": ... }`.
 5. Create a simple Q&A Anki model and deck using `genanki`.
 6. Write a Markdown preview report alongside the output showing all generated Q&A pairs.
@@ -91,6 +91,12 @@ CLI options:
 - `--output, -o`: Output `.apkg` path. Defaults to `<input>.apkg`.
 - `--model, -m`: LLM model (default `gpt5mini`).
 - `--preview-only`: Only generate the Markdown preview report and skip creating the `.apkg` deck.
+- `--preset`: Prompt specialization preset to guide Schema-Guided Reasoning. Choices:
+  - `general` (default): balanced, clear fact extraction.
+  - `cloze`: atomic facts and short noun-phrase answers suited to cloze deletions.
+  - `concepts`: focuses on why/how questions and mechanisms over trivia.
+  - `procedures`: emphasizes step order, pre/postconditions, and workflows.
+  - `programming`: stresses API names, invariants, correctness, and edge cases.
 
 ### Python API
 
@@ -102,6 +108,7 @@ generate_anki_cards(
     learning_description="Extract key concepts and definitions",
     output_path="output.apkg",
     model="gpt5mini",  # optional, default shown
+    prompt_preset="general",  # optional: general|cloze|concepts|procedures|programming
 )
 ```
 

@@ -1,7 +1,9 @@
 """Anything2Anki - Generate Anki cards from text files using AI."""
 
 from pathlib import Path
+
 from dotenv import load_dotenv
+
 from .workflow import generate_anki_cards
 
 # Load environment variables from .env file
