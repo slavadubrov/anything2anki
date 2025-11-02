@@ -45,4 +45,5 @@ dmypy.json
 
 # Project-specific
 data/
+examples/
 *.apkg

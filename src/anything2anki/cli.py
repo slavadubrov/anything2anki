@@ -42,6 +42,12 @@ def main():
         action="store_true",
         help="Only generate the Markdown preview report; skip creating the .apkg deck",
     )
+    parser.add_argument(
+        "--max-reflections",
+        type=int,
+        default=1,
+        help="Maximum number of reflection-improvement cycles (default: 1)",
+    )
 
     args = parser.parse_args()
 
@@ -58,6 +64,7 @@ def main():
             output_path=args.output,
             model=args.model,
             preview_only=args.preview_only,
+            max_reflections=args.max_reflections,
         )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
