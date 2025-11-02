@@ -147,20 +147,24 @@ def parse_feedback_response(response_content: str) -> dict:
     json_start = response_content.find("{")
     json_end = response_content.rfind("}") + 1
 
-    if json_start == -1 or json_end == 0:
-        raise ValueError(
-            f"Could not find JSON object in response. Response: {response_content[:200]}"
-        )
-
-    json_str = response_content[json_start:json_end]
-
-    # Parse JSON
-    try:
-        feedback = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Could not parse JSON feedback: {e}. Response: {response_content[:500]}"
-        )
+    feedback = None
+    if json_start != -1 and json_end != 0:
+        json_str = response_content[json_start:json_end]
+        # Parse JSON object region
+        try:
+            feedback = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Could not parse JSON feedback: {e}. Response: {response_content[:500]}"
+            )
+    else:
+        # Fallback: try parsing the whole content as JSON
+        try:
+            feedback = json.loads(response_content)
+        except json.JSONDecodeError:
+            raise ValueError(
+                f"Could not find JSON object in response. Response: {response_content[:200]}"
+            )
 
     if not isinstance(feedback, dict):
         raise ValueError("JSON feedback response is not a dictionary")
@@ -394,7 +398,17 @@ def generate_anki_cards(
     qa_pairs = generate_qa_pairs(client, model, text_content, learning_description)
     print(f"Generated {len(qa_pairs)} initial Q&A pairs")
 
-    # Step 2: Reflection and improvement loop
+    # If no pairs were generated initially, bail out before reflection
+    if not qa_pairs:
+        raise ValueError("No valid Q&A pairs found")
+
+    # If preview-only, generate the markdown now and return without reflection
+    if preview_only:
+        md_path = generate_md_report(qa_pairs, output_path)
+        print(f"\nPreview report saved to: {md_path}")
+        return
+
+    # Step 2: Reflection and improvement loop (only when we have some pairs)
     for reflection_num in range(max_reflections):
         print(f"\nReflection cycle {reflection_num + 1}/{max_reflections}...")
 
@@ -414,11 +428,6 @@ def generate_anki_cards(
 
     # Generate markdown report
     md_path = generate_md_report(qa_pairs, output_path)
-
-    # If preview-only, skip building/writing the Anki package
-    if preview_only:
-        print(f"\nPreview report saved to: {md_path}")
-        return
 
     # Build Anki deck
     _, deck = build_anki_deck(qa_pairs)
